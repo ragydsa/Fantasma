@@ -36,10 +36,10 @@
  * source of each lane). */
 #include "drum_voice.c"
 
-enum { DK_STD, DK_HAND, DK_CYM, DK_HCYM, DK_80, DK_10, DK_66, DK_55, DK_77, DK_COUNT };   /* (stored values) */
+enum { DK_STD, DK_HAND, DK_CYM, DK_HCYM, DK_80, DK_10, DK_66, DK_55, DK_77, DK_X8, DK_COUNT };   /* (stored values) */
 /* the kit a stored KIT value plays: HAND CYM H+CYM (retired after 1.0.4) -> 66 (a conga on TOM), 10 (a cymbal on
  * BELL), 77 (claves on RIM, a cymbal on BELL) */
-static const uint8_t DK_PLAYS[DK_COUNT] = {DK_STD, DK_66, DK_10, DK_77, DK_80, DK_10, DK_66, DK_55, DK_77};
+static const uint8_t DK_PLAYS[DK_COUNT] = {DK_STD, DK_66, DK_10, DK_77, DK_80, DK_10, DK_66, DK_55, DK_77, DK_X8};
 static uint32_t drum_kit_plays(int32_t v) { return DK_PLAYS[clamp(v, 0, DK_COUNT - 1)]; }
 /* the model kits' pieces where a lane plays another than its own (the lane's name): 1 TOM -> CONGA, 2 RIM -> CLAVE,
  * 4 BELL -> CYM */
@@ -59,7 +59,23 @@ typedef struct {
     uint8_t pad;
 } drum_lane_t;
 
-ENG_MEM_FITS("DRUM", sizeof(drum_lane_t) * DV_NLANE);
+/* KIT X808: X0X's TR-808 (x808.c: float code behind an integer interface; on the device a unit of its own, built
+ * for the FPU, FELUCCA_X808_EXTERN). Its state follows the lanes in the part's engine memory, all zeros = not set
+ * up; the lanes above still say which voice owns which lane */
+#define X808_BYTES 4096u
+#if FELUCCA_X808_EXTERN
+void x808_knobs(void *st, int tune, int tone, int decay, int snap);
+void x808_trigger(void *st, int track, int sw, int acc);
+int x808_live(const void *st, int lane);
+void x808_block(void *st);
+void x808_run(void *st, int lane, int32_t *y, int n);
+enum { D8_BD, D8_SD, D8_LT, D8_MT, D8_HT, D8_RS, D8_CP, D8_CB, D8_CY, D8_OH, D8_CH };   /* x808/drum808.h */
+#else
+#include "x808.c"
+#endif
+ENG_MEM_FITS("DRUM", sizeof(drum_lane_t) * DV_NLANE + X808_BYTES);
+#define DRUM_X808(K) ((void *)((drum_lane_t *)(K) + DV_NLANE))
+static uint32_t drum_is_x808(const track_t *t) { return drum_kit_plays(t->p[P_E0]) == DK_X8; }
 /* 1.4.1: each part's lanes muted (bit l: lane l), the EDIT layer's black keys 1..8 (ui_layer.c EQA_DRUM): a channel
  * mute. The lane plays on as always (hits, keys, MIDI: its voice, the CPU, the choke) and drum_render drops its output,
  * so unmuted it sounds as if it never was. Performance state: not saved, not recorded, no undo; a sound load into the
@@ -67,7 +83,7 @@ ENG_MEM_FITS("DRUM", sizeof(drum_lane_t) * DV_NLANE);
 static uint8_t drum_mute[NPART];
 
 /* 1..3 named as the kit they play: aliases, never shown or offered (EDITOR_PROTOCOL.md: retired values) */
-static const char *const N_DRUM_KIT[] = {"STD", "66", "10", "77", "80", "10", "66", "55", "77"};
+static const char *const N_DRUM_KIT[] = {"STD", "66", "10", "77", "80", "10", "66", "55", "77", "X808"};
 static const char *const N_DRUM_KICK[] = {"PUNCH", "ROUND"};
 
 /* General MIDI notes 35..81 -> the drum (DVT_*; DVT_PUNCH: the kick KICK picks) and semitones from its
@@ -89,6 +105,8 @@ static uint32_t drum_gm(const int16_t *p, uint32_t note, int32_t *st)
     uint32_t n = note >= 35u && note <= 81u ? note : 36u + (note + 120u - 36u) % 12u, t = (uint32_t)DRUM_GM[n - 35u][0];
     uint32_t kit = drum_kit_plays(p[P_E0]);           /* STD, the model kits */
     *st = DRUM_GM[n - 35u][1];
+    if (kit == DK_X8)                                 /* X0X's 808 (x808.c): the GM drum as it is, never ROUND */
+        return t;
     if (kit >= DK_80)
         return DV_KTYPE(kit - DK_80 + 1u, DV_TYPE_LANE[t]);
     return t == DVT_PUNCH && p[P_E6] > 0 ? DVT_ROUND : t;
@@ -111,7 +129,7 @@ static uint32_t drum_lane(uint32_t note)
 static uint32_t drum_swaps(const track_t *t)
 {
     uint32_t kit = drum_kit_plays(t->p[P_E0]);
-    return kit >= DK_80 ? DK_SWAP[kit - DK_80] : 0u;
+    return kit >= DK_80 && kit < DK_X8 ? DK_SWAP[kit - DK_80] : 0u;
 }
 
 /* the lane's name as the track's KIT plays it (5 characters at most) */
@@ -218,6 +236,23 @@ static void drum_note_on(track_t *t, voice_t *v)
     L = &K[(uint32_t)v->s[0] & (DV_NLANE - 1u)];
     if (L->owner == i + 1u)                              /* this voice played another lane: it stops there */
         L->owner = 0;
+    if (drum_is_x808(t)) {
+        static const uint8_t TRK[DVT_COUNT] = {D8_BD, D8_BD, D8_SD, D8_CP, D8_CH, D8_OH, D8_MT, D8_MT, D8_RS, D8_RS,
+                                               D8_CB, D8_CY};
+        uint32_t tr = TRK[role];
+        if (role == DVT_TOM || role == DVT_CONGA)        /* three toms / congas, by the note's pitch */
+            tr = st < -2 ? D8_LT : st > 3 ? D8_HT : D8_MT;
+        L = &K[lane];
+        L->owner = (uint8_t)(i + 1u);
+        L->role = (uint8_t)role;
+        v->s[0] = (int32_t)lane;
+        v->env_out = v->vel * 258;
+        v->env = 1 << 24;
+        x808_knobs(DRUM_X808(K), t->p[P_E1], t->p[P_E2], t->p[P_E3], t->p[P_E4]);
+        x808_trigger(DRUM_X808(K), (int)tr, role == DVT_CONGA || role == DVT_CLAVE,
+                     clamp((t->p[P_E5] * v->vel * 4 - 32768) * 2, 0, 65536));
+        return;
+    }
     L = &K[lane];
     if (L->role != role || L->v.type != dv_run_type(role)) {   /* another drum on this lane: from rest */
         dv_init(&L->v, role);
@@ -244,7 +279,8 @@ static int32_t drum_amp(track_t *t, voice_t *v, int32_t adsr)
     (void)adsr;
     if (!v->active)                                      /* (taken for another part: env_tick ended it) */
         return 0;
-    if (!L || (!L->v.live && !L->v.trig)) {
+    if (!L || (drum_is_x808(t) ? !x808_live(DRUM_X808(drum_kit_of(t)), (int)((uint32_t)v->s[0] & (DV_NLANE - 1u)))
+                               : !L->v.live && !L->v.trig)) {
         v->active = v->gate = 0;
         v->stage = 0;
         v->env = 0;
@@ -274,6 +310,12 @@ static void drum_render(track_t *t, voice_t *v, int32_t *out, uint32_t n, const 
     }
     if (n > CTL)
         n = CTL;
+    if (drum_is_x808(t)) {
+        void *x = DRUM_X808(drum_kit_of(t));
+        x808_knobs(x, p[P_E1], p[P_E2], p[P_E3], p[P_E4]);
+        x808_run(x, (int)((uint32_t)v->s[0] & (DV_NLANE - 1u)), y, (int)n);
+        goto mix;
+    }
     r = L->role;
     dv_default(&k, r);                                   /* the knobs move every lane from its design (64) */
     k.decay = (uint8_t)clamp(k.decay + p[P_E3] - 64, 0, 127);
@@ -291,6 +333,7 @@ static void drum_render(track_t *t, voice_t *v, int32_t *out, uint32_t n, const 
     if (dv_uses_metal(L->c.type) && (L->v.live || L->v.trig))
         dv_metal_run(&L->mb, mb, n);
     dv_run(&L->c, &L->v, mb, y, n);
+mix:
     if ((drum_mute[(uint32_t)(t - trk) % NPART] >> ((uint32_t)v->s[0] & (DV_NLANE - 1u))) & 1u)
         return;                                          /* (a muted lane rings on unheard) */
     if (drv > 0) {                                       /* DRV: x1..x4 into the soft clip, the level kept (Q12) */
@@ -303,6 +346,14 @@ static void drum_render(track_t *t, voice_t *v, int32_t *out, uint32_t n, const 
             s = (softclip((s * g) >> 12) * mk) >> 15;
         out[i] += voice_amp(soft_knee(s + (s >> 2), 24000), m, i) << 1;
     }
+}
+
+/* once a block, before the voices: the X808 kit's shared metal source */
+static void drum_block(track_t *t)
+{
+    drum_lane_t *K = drum_kit_of(t);
+    if (K && drum_is_x808(t))
+        x808_block(DRUM_X808(K));
 }
 
 /* the GM drum map, the first C (key 7) is the kick (C2, 36) */
@@ -335,9 +386,10 @@ static const engine_t ENG_DRUM = {
     .note_on = drum_note_on,
     .render = drum_render,
     .amp = drum_amp,
+    .block = drum_block,
     .knob = {P_E1, P_E2, P_E3, P_E4},
     .poly = DV_NLANE,
     .oneshot = 1,
     .keys = drum_keys,
-    .mem = sizeof(drum_lane_t) * DV_NLANE,
+    .mem = sizeof(drum_lane_t) * DV_NLANE + X808_BYTES,
 };

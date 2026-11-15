@@ -40,6 +40,11 @@ LOADER_LOAD = 0x01C0A800
 LOADER_NAME = b"usb_hid_ota.bin"    # the file name the SPL looks for
 DOCKER_IMAGE = os.environ.get("JIELI_DOCKER_IMAGE", "debian:bookworm-slim")
 CFLAGS = ["-Os", "-ffunction-sections", "-fno-builtin", "-Wall", "-Wno-unused-function"]
+# The DRUM engine's X808 kit (firmware/src/x808.c: X0X's TR-808) is float code: a unit of its own, built for the
+# AC79's single-precision FPU with X0X's flags (no fused multiply-add) at -O2; felucca.c stays integer only and
+# reaches it through integer calls (FELUCCA_X808_EXTERN)
+X808_FLAGS = ["-O2", "-ffunction-sections", "-fno-builtin", "-Wall", "-Wno-unused-function",
+              "-mcpu=r3", "-mfprev1", "-ffp-contract=off"]
 LINE = re.compile(r"^\s*([0-9a-f]+):\s+((?:[0-9a-f]{2} )+)\s*\t(.*)$")
 
 # SDK files of AC79NN_SDK_V1.2.1_2023-12-13 (the tested version)
@@ -197,6 +202,7 @@ def build_app():
     v = os.environ.get("FELUCCA_USB_LAYOUT")   # firmware/src/usb.c: how the USB composite presents itself (#67), 0..3
     if v in ("0", "1", "2", "3"):
         flags.append(f"-DFELUCCA_USB_LAYOUT={v}")
+    flags.append("-DFELUCCA_X808_EXTERN=1")
     flags.append(f'-DFELUCCA_ID="{PRODUCT}"')
     if VERSION:
         flags.append(f'-DFELUCCA_VERSION="{VERSION}"')
@@ -209,6 +215,7 @@ def build_app():
     tc_all(("cc", "-c", FW / "crt0.S", "-o", OUT / "crt0.o"),
            ("cc", "-c", FW / "hal" / "fm1_vec.S", "-o", OUT / "fm1_vec.o"),
            ("cc", "-c", FW / "hal" / "fm1_isr.S", "-o", OUT / "fm1_isr.o"),
+           ("cc", *X808_FLAGS, "-Ifirmware/src", "-c", FW / "src" / "x808.c", "-o", OUT / "x808.o"),
            cmain)
     if size:
         subprocess.run([sys.executable, SRC / "tools" / "size_fns.py", OUT / "felucca.ll", OUT / "felucca_size.ll"],
@@ -217,7 +224,7 @@ def build_app():
            OUT / "felucca_size.ll", "-o", OUT / "felucca.o")
     elf = OUT / "felucca.elf"
     tc("pi32v2/bin/ld", "-T", FW / "app.ld", OUT / "crt0.o", OUT / "fm1_vec.o", OUT / "fm1_isr.o",
-       OUT / "felucca.o", "-o", elf)
+       OUT / "felucca.o", OUT / "x808.o", "-o", elf)
     for sect in ("text.bin", "data.bin", "ramtext.bin"):
         (OUT / sect).unlink(missing_ok=True)
     *_, syms, dis, rt = tc_all(("common/bin/objcopy", "-O", "binary", "-j", ".text", elf, OUT / "text.bin"),

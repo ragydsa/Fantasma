@@ -249,7 +249,10 @@ In the order the device lists them:
   six-square hats), **10** (swept kick, white-noise snare, long-tailed claps, a cymbal), **66** (soft
   round kick, bright snare, noise hats, a conga), **55** (dropping kick, high metal hats, a metal bell)
   and **77** (swelling kick, multi-burst claps, claves, a cymbal). All of them are synthesized by
-  Felucca, no samples. EDIT > LANES and LANES 2 set each lane's level
+  Felucca, no samples. **X808** (this fork) is the TR-808 circuit model of X0X, with its own kick, snare,
+  clap, hats, three toms (the tom keys pick low, mid and high), rim shot, cowbell and cymbal (the cymbal keys); the
+  grid, RANDOM, FILL, the lane levels and mutes work on it as on every kit, and TUNE, TONE, DECY and SNAP move its
+  pots. It is the heaviest kit: with three busy synth tracks beside it the voice guard may drop notes. EDIT > LANES and LANES 2 set each lane's level
 
 The DIGITAL engine of 0.9 has been replaced by FM6: projects and presets with DIGITAL sounds load
 as FM6 sounds converted from them. The SAMPLE engine's PERC kit was removed in 1.0.2: sounds and
@@ -379,6 +382,7 @@ For more details, see [On AI-Assisted Development and Responsibility](https://gi
 - Samples: [Versilian Studios](https://versilian-studios.com/) [VSCO-2 Community Edition](https://github.com/sgossner/VSCO-2-CE) and [VCSL](https://github.com/sgossner/VCSL), CC0 1.0: the SAMPLE sets, also SLICE's PIANO and PIANO HD ([attribution](../assets/samples-cc0/ATTRIBUTION.txt))
 - VOICE engine: after [klattsch](https://github.com/tgies/klattsch) by Tony Gies (MIT); formant data from Klatt (1980) and Hillenbrand et al. (1995)
 - PHYS engine: models ported from [DaisySP](https://github.com/electro-smith/DaisySP) by Electrosmith and Emilie Gillet ([MIT](../LICENSES/MIT-DaisySP.txt)) and from Emilie Gillet's [eurorack](https://github.com/pichenettes/eurorack) code ([MIT](../LICENSES/MIT-Rings.txt))
+- DRUM engine, KIT X808: the 808 of [X0X](https://github.com/charlesvestal/fm1-x0x) by [charlesvestal](https://github.com/charlesvestal) (GPL-3.0), which is [8W8](https://github.com/athousanddetails/schwung-8W8) by athousanddetails and Gustavo Lima (GPL-3.0) with the rim shot of Yoshinosuke Horiuchi's sc808 (MIT) and the metal bank's block form after [Optimist](https://github.com/w0ts/optimist) (GPL-3.0); in `firmware/src/x808/`, unchanged
 - FM6 engine: msfa from [Dexed](https://github.com/asb2m10/dexed) by Google Inc. and Pascal Gauthier ([Apache-2.0](../LICENSES/Apache-2.0-msfa.txt))
 - Browser emulator: after [X0X](https://github.com/charlesvestal/fm1-x0x) by [charlesvestal](https://github.com/charlesvestal) (GPL-3.0), a Felucca fork whose browser build showed the way
 - Package format and boot files: [JieLi AC79 SDK](https://gitee.com/Jieli-Tech/fw-AC79_AIoT_SDK) ([Apache-2.0](../LICENSES/Apache-2.0.txt); three of its files are in every package, none in this tree)

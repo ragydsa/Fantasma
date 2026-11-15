@@ -1248,7 +1248,7 @@ static uint64_t seq_hash(const uint8_t (*ev)[3], uint32_t nev, uint32_t frames, 
 static void retired(void)
 {
     static const uint8_t MAP[4] = {DK_STD, DK_66, DK_10, DK_77};
-    static const uint8_t ORDER[6] = {DK_STD, DK_80, DK_10, DK_66, DK_55, DK_77};
+    static const uint8_t ORDER[7] = {DK_STD, DK_80, DK_10, DK_66, DK_55, DK_77, DK_X8};
     const param_desc_t *d = &ENG_DRUM.edit[0];
     uint32_t r, n, k, bad = 0, same = 0;
     int16_t kick;
@@ -1289,16 +1289,16 @@ static void retired(void)
     }
     {
         int32_t v = DK_STD, i;
-        for (i = 0; i < 6; i++) {                       /* STD 80 10 66 55 77, then held at the end */
+        for (i = 0; i < 7; i++) {                       /* STD 80 10 66 55 77 X808, then held at the end */
             bad += v != ORDER[i];
             v = param_turn(d, v, 1);
         }
-        bad += v != DK_77 || param_turn(d, DK_80, -1) != DK_STD || param_turn(d, DK_STD, -1) != DK_STD;
+        bad += v != DK_X8 || param_turn(d, DK_80, -1) != DK_STD || param_turn(d, DK_STD, -1) != DK_STD;
     }
     for (r = 1; r < 4u; r++)
         bad += strcmp(d->names[r], d->names[MAP[r]]) != 0 || enum_orig(d, (int32_t)r) != MAP[r] ||
                param_fit(d, (int32_t)r) != MAP[r];
-    bad += param_fit(d, 99) != DK_77 || param_fit(d, -5) != DK_STD || enum_orig(d, DK_55) != DK_55;
+    bad += param_fit(d, 99) != DK_X8 || param_fit(d, -5) != DK_STD || enum_orig(d, DK_55) != DK_55;
     bad += param_fit(&TP[P_LEVEL], 77) != 77;
     {   /* a motion event of KIT 2 (CYM): stored and played as 10 */
         host_tracks_init();
@@ -1350,8 +1350,127 @@ static void demos(const char *dir)
         snprintf(name, sizeof name, "beat_kit_%s", KITN[k]);
         demo_seq(dir, name, BEAT, sizeof BEAT / sizeof BEAT[0], 64, 0, (int16_t)(DK_80 + k));
     }
+    demo_seq(dir, "beat_kit_X808", BEAT, sizeof BEAT / sizeof BEAT[0], 64, 0, DK_X8);
     printf("drum_test: demos in %s: %u voices (designed, DECAY / TONE / extra low and high, TUNE -5 / +5 st), the kit's "
            "keys, a beat (PUNCH, ROUND, the kits 80 10 66 55 77)\n", dir, (uint32_t)DVT_COUNT);
+}
+
+/* KIT X808 (x808.c: X0X's TR-808 behind the DRUM engine): every lane's note sounds on its own voice and ends
+ * (the voice frees itself), under full scale with all eight struck at full velocity; a closed hat cuts the open
+ * one; a lane's LEVEL at 0 and its mute silence it; TUNE / DECY move the kick; the same beat twice from rest
+ * renders the same samples; the other kits' state is untouched by a visit (STD's beat the same after X808) */
+static uint32_t x8_render(uint32_t frames, int32_t *peak, double *rms)
+{
+    uint32_t f, k, live = 0;
+    double e = 0;
+    for (f = 0; f < frames; f += CTL) {
+        int32_t o[2 * CTL];
+        mix_block(o, CTL);
+        for (k = 0; k < CTL; k++) {
+            int32_t a = o[2 * k] < 0 ? -o[2 * k] : o[2 * k];
+            if (peak && a > *peak)
+                *peak = a;
+            e += (double)o[2 * k] * o[2 * k];
+        }
+    }
+    for (k = 0; k < NVOICE; k++)
+        live += trk[0].v[k].active;
+    if (rms)
+        *rms = sqrt(e / frames);
+    return live;
+}
+static void x808(void)
+{
+    uint32_t l, bad = 0, v;
+    int32_t pk, pa, pb;
+    double r0, r1, r2;
+    uint64_t ha, hb;
+    printf("drum_test: kit X808:");
+    for (l = 0; l < DV_NLANE; l++) {
+        host_tracks_init();
+        host_preset(&trk[0], ENGI_DRUM, 0);
+        trk[0].p[P_E0] = DK_X8;
+        trk_note_on(&trk[0], DRUM_LANE_NOTE[l], 110);
+        pk = 0;
+        v = x8_render(FS / 5u, &pk, &r0);
+        printf(" %s %.1f dB (peak %d)%s", drum_lane_name(&trk[0], l), 20 * log10(r0 / 32768.0 + 1e-12), pk, l < 7u ? ";" : "");
+        bad += pk < 1500 || pk >= 32767 || v > 1u;
+        v = x8_render(FS * 8u, 0, &r1);                 /* rung out: silent, the voice free */
+        bad += v != 0;
+        x8_render(FS / 10u, 0, &r1);
+        bad += r1 > 2.0;
+        trk[0].p[P_LN0 + l] = 0;                        /* LEVEL 0 */
+        trk_note_on(&trk[0], DRUM_LANE_NOTE[l], 110);
+        x8_render(FS / 5u, 0, &r1);
+        bad += r1 > r0 * 0.01 + 1.0;
+        trk[0].p[P_LN0 + l] = 127;
+        x8_render(FS * 8u, 0, 0);
+        drum_mute[0] = (uint8_t)(1u << l);              /* muted */
+        trk_note_on(&trk[0], DRUM_LANE_NOTE[l], 110);
+        x8_render(FS / 5u, 0, &r1);
+        bad += r1 > r0 * 0.01 + 1.0;
+        drum_mute[0] = 0;
+        x8_render(FS * 8u, 0, 0);
+    }
+    printf("\n");
+    host_tracks_init();                                 /* all eight at once, full velocity */
+    host_preset(&trk[0], ENGI_DRUM, 0);
+    trk[0].p[P_E0] = DK_X8;
+    for (l = 0; l < DV_NLANE; l++)
+        trk_note_on(&trk[0], DRUM_LANE_NOTE[l], 127);
+    pk = 0;
+    v = x8_render(CTL, &pk, 0);
+    x8_render(FS / 5u, &pk, 0);
+    bad += pk >= 32767 || v != DV_NLANE;
+    x8_render(FS * 8u, 0, 0);
+    host_tracks_init();                                 /* the hat choke */
+    host_preset(&trk[0], ENGI_DRUM, 0);
+    trk[0].p[P_E0] = DK_X8;
+    trk[0].p[P_REV] = trk[0].p[P_DLY] = 0;
+    trk_note_on(&trk[0], 46, 110);
+    x8_render(FS / 10u, 0, &r0);
+    x8_render(FS / 50u, 0, 0);
+    x8_render(FS / 10u, 0, &r1);                        /* the open hat still rings 120..220 ms in */
+    x8_render(FS * 8u, 0, 0);
+    host_tracks_init();
+    host_preset(&trk[0], ENGI_DRUM, 0);
+    trk[0].p[P_E0] = DK_X8;
+    trk[0].p[P_REV] = trk[0].p[P_DLY] = 0;
+    trk_note_on(&trk[0], 46, 110);
+    x8_render(FS / 10u, 0, &r0);
+    trk[0].p[P_LN0 + DV_HATC] = 0;                      /* (the closed hat itself unheard) */
+    trk_note_on(&trk[0], 42, 110);
+    x8_render(FS / 50u, 0, 0);
+    x8_render(FS / 10u, 0, &r2);
+    bad += r1 < 20.0 || r2 > r1 * 0.01;
+    x8_render(FS * 8u, 0, 0);
+    {                                                   /* DECY on the kick: the energy 0.3 .. 0.5 s in */
+        double lo, hi;
+        host_tracks_init();
+        host_preset(&trk[0], ENGI_DRUM, 0);
+        trk[0].p[P_E0] = DK_X8;
+        trk[0].p[P_E3] = 20;
+        trk_note_on(&trk[0], 36, 110);
+        x8_render(FS * 3u / 10u, 0, 0);
+        x8_render(FS / 5u, 0, &lo);
+        x8_render(FS * 8u, 0, 0);
+        host_tracks_init();
+        host_preset(&trk[0], ENGI_DRUM, 0);
+        trk[0].p[P_E0] = DK_X8;
+        trk[0].p[P_E3] = 110;
+        trk_note_on(&trk[0], 36, 110);
+        x8_render(FS * 3u / 10u, 0, 0);
+        x8_render(FS / 5u, 0, &hi);
+        bad += hi < lo * 2.0;
+        x8_render(FS * 8u, 0, 0);
+    }
+    ha = seq_hash(BEAT, NELEM(BEAT), 64u * (FS / 8u) + FS / 2u, 0, DK_X8, &pa);
+    hb = seq_hash(BEAT, NELEM(BEAT), 64u * (FS / 8u) + FS / 2u, 0, DK_X8, &pb);
+    bad += ha != hb || pa != pb || pa < 4000 || pa >= 32767;
+    printf("drum_test: kit X808: the 8 lanes sound, end and free their voice, LEVEL 0 and mute silence a lane, all 8 at "
+           "full velocity under full scale (peak %d), the closed hat cuts the open one (%.0f -> %.0f), DECY moves the "
+           "kick, the beat twice the same samples (peak %d): %s\n", pk, r1, r2, pa, bad ? "FAIL" : "ok");
+    fails += bad;
 }
 
 int main(int argc, char **argv)
@@ -1370,6 +1489,7 @@ int main(int argc, char **argv)
     kits();
     kit_keys();
     retired();
+    x808();
     lane_budget();
     lane_levels();
     engine();
