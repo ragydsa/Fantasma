@@ -1987,6 +1987,25 @@ static void graph_cat(uint16_t acc, int32_t lv, int32_t pt, int32_t kick)
             cv_line(mx + cat.dir * f * s, hy + k * 2 * s, mx + cat.dir * (2 + f) * 2 * s, hy + k * 4 * s, fur);
         cat.hiss--;
     }
+    {                                                 /* the note a held key plays (the keys only, never the sequencer:
+                                                       * kb_prev, seq.c): its name over the cat; not on a drum kit */
+        static uint32_t seen, key;                    /* the key pressed last, while it is held (else any held one) */
+        uint32_t k, on = 0, n = 0;
+        for (k = 0; k < 27u; k++)
+            if (((kb_prev & ~seen) >> k) & 1u)
+                key = k;
+        seen = kb_prev;
+        for (k = 0; k < 27u; k++)
+            if (((kb_prev >> k) & 1u) && kb_note[k] != KB_SILENT && !drum_track(&trk[kb_trk[k] % NTRK])) {
+                if (!on || k == key)
+                    n = kb_note[k];
+                on = 1;
+            }
+        if (on) {
+            int32_t ty = y0 - 3 * s - 20;
+            cv_text_in(x0, ty < 1 ? 1 : ty, cw, &AF_M, N_NOTE[n % 12u], T_ACCENT, T_SURF);
+        }
+    }
     if (cat.fuzz)
         cat.fuzz--;
 }
