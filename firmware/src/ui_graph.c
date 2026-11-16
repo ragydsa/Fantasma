@@ -1902,10 +1902,15 @@ static void draw_home_tracks(void)
     for (c = 0; c < NTRK; c++)
         home_track_row(c);
 }
-/* HOME's cat (this fork): a pixel cat walks the picture's floor, there and back. The sound moves it: a new note
- * (graph_motes' kick) makes it jump, a loud sound makes it arch its back and bristle (a jagged, flickering outline),
- * and a loud high one, or a loud one that goes on, makes it hiss (the mouth open, three short breaths). Quiet: it
- * strolls on, slower. 22 x 14 cells of 2 or 3 px, drawn over the motes; '#' the coat, 'o' an eye */
+/* HOME's cat (this fork): a pixel cat lives on the picture's floor, and the sound decides what it does.
+ *   a beat (new notes close together): it hops on every hit and turns round on every other
+ *   very loud, or loud and high: it arches its back, bristles (a jagged flickering outline) and hisses
+ *   calm sound (an ambient pad, few new notes) or silence: it sits, its tail tip sways, and it licks a paw
+ *   now and then, while something sounds: a mouse runs across; the cat chases it and pounces. Caught, it sits
+ *     down and licks its paw
+ *   otherwise it strolls there and back
+ * Over the cat, the name of the note a held key plays (the keys only, never the sequencer; not on a drum kit).
+ * 22 x 14 cells of 2 or 3 px, drawn over the motes; '#' the coat, 'o' an eye */
 #define CAT_W 22
 #define CAT_H 14
 static const char *const CAT_BODY[11] = {
@@ -1926,51 +1931,132 @@ static const char *const CAT_LEGS[3][3] = {
     {"..##..##...##...##....", ".##....##.##.....##...", ".##....##.##.....##..."},     /* a stride */
     {".###........###.......", "......................", "......................"},     /* tucked (in the air) */
 };
+static const char *const CAT_SIT[CAT_H] = {
+    "...............#...#..",
+    "...............##.##..",
+    "...............#####..",
+    "..............#######.",
+    "..............#o###o#.",
+    "..............#######.",
+    "...........####.###...",
+    ".........##########...",
+    "........###########...",
+    ".......###########....",
+    ".......###########....",
+    ".......###########....",
+    "#......####..##.##....",
+    ".#########...##.##....",
+};
 static struct {
-    int16_t x;                                        /* the left edge, Q3 px */
-    int8_t dir;                                       /* 1: to the right */
+    int16_t x, mx;                                    /* the cat's left edge and the mouse, Q3 px */
+    int8_t dir, mdir;                                 /* 1: to the right */
     uint8_t jump, fuzz, hiss, step, loud;             /* frames left of each; the stride's phase; frames loud in a row */
-} cat = {40 << 3, 1, 0, 0, 0, 0, 0};
+    uint8_t beat, calm, lick, mouse, hits, jlen;      /* how beat-like (decays); frames calm; licking; a mouse is out */
+    uint32_t rnd;
+} cat = {40 << 3, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 12345u};
+static uint32_t cat_rnd(void)
+{
+    cat.rnd = cat.rnd * 1664525u + 1013904223u;
+    return cat.rnd >> 16;
+}
 static void graph_cat(uint16_t acc, int32_t lv, int32_t pt, int32_t kick)
 {
     static const int8_t ARCH[CAT_W] = {0, 0, 0, 1, 1, 2, 2, 3, 3, 3, 3, 2, 2, 1, 1, 0, 0, 0, 0, 0, 0, 0};
     int32_t w = PANEL_W, h = (int32_t)cv_h, s = h >= 60 ? 3 : 2, cw = CAT_W * s, x0, y0, cx, cy, up = 0, legs;
+    int32_t angry, beat, sit, lo = 8, hi = w - cw - 8, speed = 0;
     uint16_t coat = ux_mix(T_SURF, acc, 88), eye = T_ACCENT, fur = ux_mix(T_SURF, T_ACCENT, 80);
     if (h < CAT_H * 2 + 6)
         return;
-    if (kick && !cat.jump)
-        cat.jump = 14;
-    cat.loud = (uint8_t)(lv > 150 ? (cat.loud < 200 ? cat.loud + 1 : 200) : 0);
-    if (lv > 150)
-        cat.fuzz = 10;
-    if ((lv > 110 && pt > 140) || cat.loud > 24)
-        cat.hiss = 8;
-    if (cat.jump) {                                   /* a hop: up and down in 14 frames, 7 cells at the top */
-        int32_t t = 14 - cat.jump;
-        up = t * (13 - t) * 7 * s / 42;
+    /* what the sound is like */
+    if (kick) {
+        cat.beat = (uint8_t)(cat.beat > 200 ? 255 : cat.beat + 45);
+        cat.hits++;
+    } else if (cat.beat)
+        cat.beat--;
+    beat = cat.beat > 70;
+    cat.calm = (uint8_t)(cat.beat > 30 ? 0 : cat.calm < 250 ? cat.calm + 1 : 250);
+    cat.loud = (uint8_t)(lv > 200 ? (cat.loud < 200 ? cat.loud + 1 : 200) : 0);
+    if (cat.loud > 12 || (lv > 150 && pt > 150)) {    /* very loud for a while, or loud and high: angry */
+        cat.fuzz = 12;
+        cat.hiss = 10;
+    }
+    angry = cat.fuzz || cat.hiss;
+    /* the mouse: out now and then while something sounds (not into a beat, not at an angry cat) */
+    if (!cat.mouse && !angry && !beat && lv > 10 && cat_rnd() % 110u == 0) {
+        cat.mouse = 1;
+        cat.mdir = (int8_t)((cat.x >> 3) > w / 2 ? 1 : -1);          /* in from the far side, towards the cat */
+        cat.mx = (int16_t)((cat.mdir > 0 ? 2 : w - 10) << 3);
+        cat.lick = 0;
+    }
+    if (cat.mouse) {
+        int32_t d = (cat.mx >> 3) - ((cat.x >> 3) + cw / 2);
+        if (d * cat.mdir < 0 && (d < 0 ? -d : d) < 60)                /* it sees the cat: back the way it came */
+            cat.mdir = (int8_t)-cat.mdir;
+        cat.mx = (int16_t)(cat.mx + cat.mdir * 13);
+        if ((cat.mx >> 3) < 0 || (cat.mx >> 3) > w - 6)
+            cat.mouse = 0;                                            /* got away */
+        else if (!angry) {
+            cat.dir = (int8_t)(d < 0 ? -1 : 1);
+            speed = 15;
+            if ((d < 0 ? -d : d) < cw / 2 + 28 && !cat.jump)
+                cat.jump = cat.jlen = 12;                                        /* the pounce */
+            if ((d < 0 ? -d : d) < cw / 2 + 4 && cat.jump < 4) {      /* caught: a wash afterwards */
+                cat.mouse = 0;
+                cat.lick = 70;
+            }
+        }
+    } else if (!angry) {
+        if (beat) {                                   /* a beat: a hop on each hit, about-face on every other */
+            if (kick && !cat.jump) {
+                cat.jump = cat.jlen = 10;
+                if (!(cat.hits & 1u))
+                    cat.dir = (int8_t)-cat.dir;
+            }
+            speed = 6;
+            cat.lick = 0;
+        } else if (cat.calm > 80) {                   /* calm or silent: it sits; a wash every so often */
+            if (!cat.lick && cat_rnd() % 150u == 0)
+                cat.lick = 60;
+        } else {
+            speed = lv > 20 ? 8 : 4;
+            if (kick && !cat.jump)
+                cat.jump = cat.jlen = 14;                        /* a single new note: a start */
+        }
+    }
+    if (angry)
+        cat.lick = 0;
+    sit = !angry && !cat.mouse && !beat && !cat.jump && (cat.lick || cat.calm > 80);
+    if (cat.jump) {                                   /* a hop: up and down; the beat's are low, a pounce is high */
+        int32_t n = cat.jlen ? cat.jlen : 14, t = n - cat.jump;
+        up = t * (n - 1 - t) * (n > 10 ? 7 : 4) * s * 4 / ((n - 1) * (n - 1));
         cat.jump--;
     }
-    if (!cat.fuzz && !cat.hiss) {                     /* strolling (not while it stands its ground) */
-        cat.x = (int16_t)(cat.x + cat.dir * (lv > 20 ? 8 : 4));
-        cat.step++;
+    if (speed && !sit) {
+        cat.x = (int16_t)(cat.x + cat.dir * speed);
+        cat.step = (uint8_t)(cat.step + (speed > 10 ? 2 : 1));
     }
-    if ((cat.x >> 3) > w - cw - 8) {
-        cat.x = (int16_t)((w - cw - 8) << 3);
-        cat.dir = -1;
+    if ((cat.x >> 3) > hi) {
+        cat.x = (int16_t)(hi << 3);
+        if (!cat.mouse)
+            cat.dir = -1;
     }
-    if ((cat.x >> 3) < 8) {
-        cat.x = 8 << 3;
-        cat.dir = 1;
+    if ((cat.x >> 3) < lo) {
+        cat.x = (int16_t)(lo << 3);
+        if (!cat.mouse)
+            cat.dir = 1;
     }
     x0 = PANEL_X0 + (cat.x >> 3);
     y0 = h - 3 - CAT_H * s - up;
-    legs = cat.jump ? 2 : (cat.fuzz || cat.hiss) ? 0 : (cat.step >> 2) & 1;
+    legs = cat.jump ? 2 : angry ? 0 : (cat.step >> 2) & 1;
     for (cy = 0; cy < CAT_H; cy++) {
-        const char *row = cy < 11 ? CAT_BODY[cy] : CAT_LEGS[legs][cy - 11];
+        const char *row = sit ? CAT_SIT[cy] : cy < 11 ? CAT_BODY[cy] : CAT_LEGS[legs][cy - 11];
+        int32_t nod = sit && cat.lick && cy < 6 && ((cat.lick >> 3) & 1);      /* the head dips to the paw */
         for (cx = 0; cx < CAT_W; cx++) {
             int32_t px = x0 + (cat.dir > 0 ? cx : CAT_W - 1 - cx) * s;
-            int32_t py = y0 + (cy - (cat.fuzz && cy < 11 ? ARCH[cx] : 0)) * s;
+            int32_t py = y0 + (cy + nod - (cat.fuzz && cy < 11 ? ARCH[cx] : 0)) * s;
             char c = row[cx];
+            if (sit && cy == 12 && cx == 0 && ((ui.frame >> 4) & 1))           /* the tail tip sways */
+                py -= s;
             if (c == '.') {                           /* bristling: fur stands up along the back, the tail and the head */
                 if (cat.fuzz && cy < 10 && CAT_BODY[cy + 1][cx] != '.' && ((cx + (int32_t)(ui.frame >> 1)) & 1))
                     cv_rect(px, py, s, s, fur);
@@ -1978,6 +2064,21 @@ static void graph_cat(uint16_t acc, int32_t lv, int32_t pt, int32_t kick)
             }
             cv_rect(px, py, s, s, c == 'o' ? eye : coat);
         }
+    }
+    if (sit && cat.lick) {                            /* the paw up at the mouth, the tongue on every other dip */
+        int32_t px = x0 + (cat.dir > 0 ? 17 * s : (CAT_W - 19) * s), py = y0 + 7 * s;
+        cv_rect(px, py, 2 * s, 3 * s, coat);
+        if ((cat.lick >> 3) & 1)
+            cv_rect(px + (cat.dir > 0 ? 0 : s), py - s, s, s, T_ACCENT);
+        cat.lick--;
+    }
+    if (cat.mouse) {                                  /* the mouse: a body, an ear, an eye, a tail behind it */
+        int32_t mx = PANEL_X0 + (cat.mx >> 3), my = h - 3 - 2 * s, f = (int32_t)(ui.frame >> 1) & 1;
+        uint16_t mc = ux_mix(T_SURF, T_TEXT, 70);
+        cv_rect(mx, my, 4 * s, 2 * s, mc);
+        cv_rect(mx + (cat.mdir > 0 ? 3 * s : 0), my - s, s, s, mc);
+        cv_rect(mx + (cat.mdir > 0 ? 4 * s : -s), my + s, s, s, mc);
+        cv_line(mx + (cat.mdir > 0 ? 0 : 4 * s), my + s, mx + (cat.mdir > 0 ? -3 * s : 7 * s), my + f * s, mc);
     }
     if (cat.hiss) {                                   /* the mouth, and the breath ahead of it */
         int32_t hx = x0 + (cat.dir > 0 ? 17 * s : (CAT_W - 18) * s), hy = y0 + 5 * s, k;
@@ -1987,8 +2088,7 @@ static void graph_cat(uint16_t acc, int32_t lv, int32_t pt, int32_t kick)
             cv_line(mx + cat.dir * f * s, hy + k * 2 * s, mx + cat.dir * (2 + f) * 2 * s, hy + k * 4 * s, fur);
         cat.hiss--;
     }
-    {                                                 /* the note a held key plays (the keys only, never the sequencer:
-                                                       * kb_prev, seq.c): its name over the cat; not on a drum kit */
+    {                                                 /* the note a held key plays (kb_prev, seq.c): its name */
         static uint32_t seen, key;                    /* the key pressed last, while it is held (else any held one) */
         uint32_t k, on = 0, n = 0;
         for (k = 0; k < 27u; k++)
