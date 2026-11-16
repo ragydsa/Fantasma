@@ -1902,6 +1902,94 @@ static void draw_home_tracks(void)
     for (c = 0; c < NTRK; c++)
         home_track_row(c);
 }
+/* HOME's cat (this fork): a pixel cat walks the picture's floor, there and back. The sound moves it: a new note
+ * (graph_motes' kick) makes it jump, a loud sound makes it arch its back and bristle (a jagged, flickering outline),
+ * and a loud high one, or a loud one that goes on, makes it hiss (the mouth open, three short breaths). Quiet: it
+ * strolls on, slower. 22 x 14 cells of 2 or 3 px, drawn over the motes; '#' the coat, 'o' an eye */
+#define CAT_W 22
+#define CAT_H 14
+static const char *const CAT_BODY[11] = {
+    "...............#...#..",
+    "#..............##.##..",
+    "#..............#####..",
+    "#.............#######.",
+    ".#............#o###o#.",
+    ".#............#######.",
+    "..#############.###...",
+    "..#################...",
+    "..################....",
+    "..################....",
+    "..################....",
+};
+static const char *const CAT_LEGS[3][3] = {
+    {"..##.##.....##.##.....", "..##.##.....##.##.....", "..##.##.....##.##....."},     /* standing */
+    {"..##..##...##...##....", ".##....##.##.....##...", ".##....##.##.....##..."},     /* a stride */
+    {".###........###.......", "......................", "......................"},     /* tucked (in the air) */
+};
+static struct {
+    int16_t x;                                        /* the left edge, Q3 px */
+    int8_t dir;                                       /* 1: to the right */
+    uint8_t jump, fuzz, hiss, step, loud;             /* frames left of each; the stride's phase; frames loud in a row */
+} cat = {40 << 3, 1, 0, 0, 0, 0, 0};
+static void graph_cat(uint16_t acc, int32_t lv, int32_t pt, int32_t kick)
+{
+    static const int8_t ARCH[CAT_W] = {0, 0, 0, 1, 1, 2, 2, 3, 3, 3, 3, 2, 2, 1, 1, 0, 0, 0, 0, 0, 0, 0};
+    int32_t w = PANEL_W, h = (int32_t)cv_h, s = h >= 60 ? 3 : 2, cw = CAT_W * s, x0, y0, cx, cy, up = 0, legs;
+    uint16_t coat = ux_mix(T_SURF, acc, 88), eye = T_ACCENT, fur = ux_mix(T_SURF, T_ACCENT, 80);
+    if (h < CAT_H * 2 + 6)
+        return;
+    if (kick && !cat.jump)
+        cat.jump = 14;
+    cat.loud = (uint8_t)(lv > 150 ? (cat.loud < 200 ? cat.loud + 1 : 200) : 0);
+    if (lv > 150)
+        cat.fuzz = 10;
+    if ((lv > 110 && pt > 140) || cat.loud > 24)
+        cat.hiss = 8;
+    if (cat.jump) {                                   /* a hop: up and down in 14 frames, 7 cells at the top */
+        int32_t t = 14 - cat.jump;
+        up = t * (13 - t) * 7 * s / 42;
+        cat.jump--;
+    }
+    if (!cat.fuzz && !cat.hiss) {                     /* strolling (not while it stands its ground) */
+        cat.x = (int16_t)(cat.x + cat.dir * (lv > 20 ? 8 : 4));
+        cat.step++;
+    }
+    if ((cat.x >> 3) > w - cw - 8) {
+        cat.x = (int16_t)((w - cw - 8) << 3);
+        cat.dir = -1;
+    }
+    if ((cat.x >> 3) < 8) {
+        cat.x = 8 << 3;
+        cat.dir = 1;
+    }
+    x0 = PANEL_X0 + (cat.x >> 3);
+    y0 = h - 3 - CAT_H * s - up;
+    legs = cat.jump ? 2 : (cat.fuzz || cat.hiss) ? 0 : (cat.step >> 2) & 1;
+    for (cy = 0; cy < CAT_H; cy++) {
+        const char *row = cy < 11 ? CAT_BODY[cy] : CAT_LEGS[legs][cy - 11];
+        for (cx = 0; cx < CAT_W; cx++) {
+            int32_t px = x0 + (cat.dir > 0 ? cx : CAT_W - 1 - cx) * s;
+            int32_t py = y0 + (cy - (cat.fuzz && cy < 11 ? ARCH[cx] : 0)) * s;
+            char c = row[cx];
+            if (c == '.') {                           /* bristling: fur stands up along the back, the tail and the head */
+                if (cat.fuzz && cy < 10 && CAT_BODY[cy + 1][cx] != '.' && ((cx + (int32_t)(ui.frame >> 1)) & 1))
+                    cv_rect(px, py, s, s, fur);
+                continue;
+            }
+            cv_rect(px, py, s, s, c == 'o' ? eye : coat);
+        }
+    }
+    if (cat.hiss) {                                   /* the mouth, and the breath ahead of it */
+        int32_t hx = x0 + (cat.dir > 0 ? 17 * s : (CAT_W - 18) * s), hy = y0 + 5 * s, k;
+        int32_t mx = cat.dir > 0 ? x0 + CAT_W * s + s : x0 - s, f = (int32_t)(ui.frame >> 1) & 1;
+        cv_rect(hx, hy, s, s + s / 2, T_SURF);
+        for (k = -1; k <= 1; k++)
+            cv_line(mx + cat.dir * f * s, hy + k * 2 * s, mx + cat.dir * (2 + f) * 2 * s, hy + k * 4 * s, fur);
+        cat.hiss--;
+    }
+    if (cat.fuzz)
+        cat.fuzz--;
+}
 /* oscilloscope of the output, triggered on a rising zero crossing: a RAISE centre line, the trace 2 px (in silence
  * a flat line on it; MENU > SCREEN OFF keeps it from staying on the panel for hours) */
 /* HOME's picture (FANTASMA): MOTES, dust in the air. 150 specks drift to the right, each with its own slow wander, at three
@@ -1982,6 +2070,7 @@ static void graph_motes(uint16_t acc)
         else
             cv_pset(x, y, ux_mix(T_SURF, hi, br));
     }
+    graph_cat(acc, lv, pt, kick);
 }
 static void graph_scope(uint16_t c) __attribute__((unused));
 static void graph_scope(uint16_t c)
